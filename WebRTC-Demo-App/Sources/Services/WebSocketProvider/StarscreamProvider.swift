@@ -29,6 +29,10 @@ class StarscreamWebSocket: WebSocketProvider {
 }
 
 extension StarscreamWebSocket: Starscream.WebSocketDelegate {
+    func didReceive(event: Starscream.WebSocketEvent, client: Starscream.WebSocketClient) {
+        //
+    }
+    
     
     func didReceive(event: Starscream.WebSocketEvent, client: Starscream.WebSocket) {
         switch event {
