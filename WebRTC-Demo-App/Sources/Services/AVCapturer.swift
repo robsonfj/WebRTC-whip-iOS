@@ -9,37 +9,25 @@
 import AVFoundation
 import WebRTC
 
-class VideoCapturer: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,AVCaptureAudioDataOutputSampleBufferDelegate {
+class AVCapturer: NSObject, AVCaptureDataOutputSynchronizerDelegate {
+        
     private let videoCapturer = RTCVideoCapturer()
     
-    private var videoSource: RTCVideoSource?
+    private var synchronizer: AVCaptureDataOutputSynchronizer?
     
+    private var videoSource: RTCVideoSource?
+    private var audioSource: AudioDevice?
     
     private var videoOutput = AVCaptureVideoDataOutput()
     private var audioOutput = AVCaptureAudioDataOutput()
     
-    let captureSession = AVCaptureSession()
-    
     private let audioSession = AVAudioSession.sharedInstance()
+    
+    let captureSession = AVCaptureSession()
     
     
     override init() {
         super.init()
-        
-        videoOutput.setSampleBufferDelegate(
-            self,
-            queue: DispatchQueue(
-                label: "videoQueue"
-            )
-        )
-        videoOutput.alwaysDiscardsLateVideoFrames = true
-        
-        audioOutput.setSampleBufferDelegate(
-            self,
-            queue: DispatchQueue(
-                label: "audioQueue"
-            )
-        )
         
         NotificationCenter.default.addObserver(
             forName: UIDevice.orientationDidChangeNotification,
@@ -159,13 +147,17 @@ class VideoCapturer: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,AVCa
     }
     
     func audioInputs() -> [AVAudioSessionPortDescription] {
-        return audioSession.availableInputs ?? []
-    }
+       return audioSession.availableInputs ?? []
+   }
     
     func setVideoSource(
         source: RTCVideoSource
     ){
         self.videoSource = source
+    }
+    
+    func setAudioDevice(device: AudioDevice) {
+        self.audioSource = device
     }
     
     func updateVideoOrientation() {
@@ -212,67 +204,68 @@ class VideoCapturer: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,AVCa
     }
     
     func setAudioInputToBluetoothOrUSB() {
-        
-        do {
-            // 1. Set category
-            try audioSession.setCategory(
-                .playAndRecord,
-                mode: .videoChat,
-                options: [.defaultToSpeaker]
-            )
             
-            // 3. List available audio inputs
-            let availableInputs = audioInputs()
-            let availableModes = audioSession.outputDataSources ?? []
-            
-            for inpt in availableModes {
+            do {
+                // 1. Set category
+                try audioSession.setCategory(
+                    .playAndRecord,
+                    mode: .videoChat,
+                    options: [.defaultToSpeaker]
+                )
+                
+                // 3. List available audio inputs
+                let availableInputs = audioInputs()
+                let availableModes = audioSession.outputDataSources ?? []
+                
+                for inpt in availableModes {
+                    print(
+                        "out \(inpt.dataSourceName)"
+                    )
+                }
+                for inpt in availableInputs {
+                    print(
+                        "Input \(inpt.portName)"
+                    )
+                }
+                
+                //            try audioSession.setAggregatedIOPreference(.aggregated)
+                //            // 4. Select desired input (Bluetooth HFP, USB, etc.)
+                //            if let preferredInput = availableInputs.first(where: { $0.portType == .bluetoothHFP }) {
+                //                try audioSession.setPreferredInput(preferredInput)
+                //                print("Bluetooth input selected: \(preferredInput.portName)")
+                //            } else if let usbInput = availableInputs.first(where: { $0.portType == .usbAudio }) {
+                //                try audioSession.setPreferredInput(usbInput)
+                //                print("USB input selected: \(usbInput.portName)")
+                //            } else if let builtInMic = availableInputs.first(where: { $0.portType == .builtInSpeaker }) {
+                //                try audioSession.setPreferredInput(builtInMic)
+                //                print("Defaulting to built-in mic")
+                //            }
+                
+                let route = audioSession.currentRoute
+                
+                for input in route.inputs {
+                    print(
+                        "🎤 Current input: \(input.portName) - \(input.portType.rawValue)"
+                    )
+                }
+                
+                for output in route.outputs {
+                    print(
+                        "🔊 Current output: \(output.portName) - \(output.portType.rawValue)"
+                    )
+                }
+                
+                try self.audioSession.setActive(
+                    true
+                )
+                
+            } catch {
                 print(
-                    "out \(inpt.dataSourceName)"
+                    "Error configuring audio session: \(error)"
                 )
             }
-            for inpt in availableInputs {
-                print(
-                    "Input \(inpt.portName)"
-                )
-            }
-            
-            //            try audioSession.setAggregatedIOPreference(.aggregated)
-            //            // 4. Select desired input (Bluetooth HFP, USB, etc.)
-            //            if let preferredInput = availableInputs.first(where: { $0.portType == .bluetoothHFP }) {
-            //                try audioSession.setPreferredInput(preferredInput)
-            //                print("Bluetooth input selected: \(preferredInput.portName)")
-            //            } else if let usbInput = availableInputs.first(where: { $0.portType == .usbAudio }) {
-            //                try audioSession.setPreferredInput(usbInput)
-            //                print("USB input selected: \(usbInput.portName)")
-            //            } else if let builtInMic = availableInputs.first(where: { $0.portType == .builtInSpeaker }) {
-            //                try audioSession.setPreferredInput(builtInMic)
-            //                print("Defaulting to built-in mic")
-            //            }
-            
-            let route = audioSession.currentRoute
-            
-            for input in route.inputs {
-                print(
-                    "🎤 Current input: \(input.portName) - \(input.portType.rawValue)"
-                )
-            }
-            
-            for output in route.outputs {
-                print(
-                    "🔊 Current output: \(output.portName) - \(output.portType.rawValue)"
-                )
-            }
-            
-            try self.audioSession.setActive(
-                true
-            )
-            
-        } catch {
-            print(
-                "Error configuring audio session: \(error)"
-            )
         }
-    }
+    
     
     func setupAndCapture(
         device: AVCaptureDevice,
@@ -282,14 +275,13 @@ class VideoCapturer: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,AVCa
     ) {
         
         guard let audioDevice = AVCaptureDevice.default(
-            for: .audio
-        ) else {
-            return
-        }
+           for: .audio
+       ) else {
+           return
+       }
         
-        if(
-            captureSession.isRunning
-        ){
+        
+        if(captureSession.isRunning){
             captureSession.stopRunning()
         }
         
@@ -317,7 +309,7 @@ class VideoCapturer: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,AVCa
         }
         
         captureSession.usesApplicationAudioSession = true
-        captureSession.automaticallyConfiguresApplicationAudioSession = false
+        captureSession.automaticallyConfiguresApplicationAudioSession = true
         
         captureSession.addInput(
             videoInput
@@ -326,14 +318,19 @@ class VideoCapturer: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,AVCa
             audioInput
         )
         
-        // Add outputs when empty
-        if captureSession.outputs.isEmpty {
+        videoOutput.alwaysDiscardsLateVideoFrames = true
+        
+        // Add outputs
+        if captureSession.canAddOutput(videoOutput) && captureSession.canAddOutput(audioOutput) {
             captureSession.addOutput(
                 videoOutput
             )
             captureSession.addOutput(
                 audioOutput
             )
+            
+            synchronizer = AVCaptureDataOutputSynchronizer(dataOutputs: [videoOutput, audioOutput])
+            synchronizer?.setDelegate(self, queue: DispatchQueue(label: "synchronizer.queue"))
         }
         
         //        videoOutput.videoSettings = [
@@ -356,9 +353,10 @@ class VideoCapturer: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,AVCa
         
         self.updateVideoOrientation()
         
-        captureSession.commitConfiguration()
         
         self.setAudioInputToBluetoothOrUSB()
+        
+        captureSession.commitConfiguration()
         
         DispatchQueue.global(
             qos: .userInitiated
@@ -368,25 +366,28 @@ class VideoCapturer: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,AVCa
         
     }
     
-    // Send frames to WebRTC
-    func captureOutput(
-        _ output: AVCaptureOutput,
-        didOutput sampleBuffer: CMSampleBuffer,
-        from connection: AVCaptureConnection
-    ) {
-        if (
-            videoOutput == output
-        ){
-            captureOutputVideo(
-                sampleBuffer: sampleBuffer
-            )
-        } else if(
-            audioOutput == output
-        ){
-            captureOutputAudio(
-                sampleBuffer: sampleBuffer
-            )
-        }
+    func dataOutputSynchronizer(_ synchronizer: AVCaptureDataOutputSynchronizer, didOutput synchronizedDataCollection: AVCaptureSynchronizedDataCollection) {
+        // Get synchronized video
+          if let syncedVideo = synchronizedDataCollection.synchronizedData(for: videoOutput) as? AVCaptureSynchronizedSampleBufferData,
+             !syncedVideo.sampleBufferWasDropped {
+              
+              let videoSampleBuffer = syncedVideo.sampleBuffer
+//              let videoPTS = CMSampleBufferGetPresentationTimeStamp(videoSampleBuffer)
+//              print("Synced Video PTS: \(videoPTS.seconds)")
+              
+              captureOutputVideo(sampleBuffer: videoSampleBuffer)
+          }
+
+          // Get synchronized audio
+          if let syncedAudio = synchronizedDataCollection.synchronizedData(for: audioOutput) as? AVCaptureSynchronizedSampleBufferData,
+             !syncedAudio.sampleBufferWasDropped {
+              
+              let audioSampleBuffer = syncedAudio.sampleBuffer
+//              let audioPTS = CMSampleBufferGetPresentationTimeStamp(audioSampleBuffer)
+//              print("Synced Audio PTS: \(audioPTS.seconds)")
+
+              audioSource?.deliverRecordedData(sampleBuffer: audioSampleBuffer)
+          }
     }
     
     private func captureOutputVideo(
@@ -420,66 +421,6 @@ class VideoCapturer: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,AVCa
                 didCapture: videoFrame
             )
         }
-    }
-    
-    private func captureOutputAudio(
-        sampleBuffer: CMSampleBuffer
-    ){
-        guard let formatDesc = CMSampleBufferGetFormatDescription(
-            sampleBuffer
-        ),
-              let audioStreamBasicDescription = CMAudioFormatDescriptionGetStreamBasicDescription(
-                formatDesc
-              ) else {
-            return
-        }
-        
-        let audioFormat = AVAudioFormat(
-            streamDescription: audioStreamBasicDescription
-        )
-        
-        guard let blockBuffer = CMSampleBufferGetDataBuffer(
-            sampleBuffer
-        ) else {
-            return
-        }
-        
-        let numSamples = CMSampleBufferGetNumSamples(
-            sampleBuffer
-        )
-        let pcmBuffer = AVAudioPCMBuffer(
-            pcmFormat: audioFormat!,
-            frameCapacity: AVAudioFrameCount(
-                numSamples
-            )
-        )!
-        
-        pcmBuffer.frameLength = pcmBuffer.frameCapacity
-        
-        // Copy raw bytes from CMSampleBuffer to AVAudioPCMBuffer
-        var length = 0
-        var dataPointer: UnsafeMutablePointer<Int8>?
-        CMBlockBufferGetDataPointer(
-            blockBuffer,
-            atOffset: 0,
-            lengthAtOffsetOut: nil,
-            totalLengthOut: &length,
-            dataPointerOut: &dataPointer
-        )
-        
-        if let channelData = pcmBuffer.int16ChannelData {
-            memcpy(
-                channelData[0],
-                dataPointer,
-                length
-            )
-        }
-        
-        
-//        audioPlayer.scheduleBuffer(
-//            pcmBuffer,
-//            completionHandler: nil
-//        )
     }
 }
 

@@ -63,10 +63,8 @@ class WHIPClient: NSObject {
     private var peerConnection: RTCPeerConnection?
     
     var videoSource: RTCVideoSource!
-    
-//    private var videoTrack: RTCVideoTrack?
-//    private var audioTrack: RTCAudioTrack?
-    
+    var audioDevice = AudioDevice()
+        
     private let encoder = RTCDefaultVideoEncoderFactory()
     private let decoder = RTCDefaultVideoDecoderFactory()
     private var codec = kRTCVideoCodecH264Name
@@ -114,10 +112,13 @@ class WHIPClient: NSObject {
         
         factory = RTCPeerConnectionFactory(
             encoderFactory: encoder,
-            decoderFactory: decoder
+            decoderFactory: decoder, 
+            audioDevice: audioDevice
+            
         )
         
         videoSource = factory.videoSource()
+        
         
     }
     
@@ -136,7 +137,7 @@ class WHIPClient: NSObject {
                     encoding.networkPriority = .medium
                     
                 }
-                params.degradationPreference = NSNumber(value: RTCDegradationPreference.maintainResolution.rawValue)
+                params.degradationPreference = NSNumber(value: RTCDegradationPreference.balanced.rawValue)
                 
                 params.encodings[0] = encoding
                 sender.parameters = params
@@ -159,13 +160,12 @@ class WHIPClient: NSObject {
         
         let session = AVAudioSession.sharedInstance()
         print("Input before WebRTC track: \(session.currentRoute.inputs.first?.portName ?? "None")")
-        
-        let audioConstraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
-        
+                
         let streamId = "stream"
         
         let videoTrack = factory.videoTrack(with: videoSource, trackId: "video0")
-        let audioTrack = factory.audioTrack(with: factory.audioSource(with: audioConstraints), trackId: "audio0")
+        let audioTrack = factory.audioTrack(with: factory.audioSource(with: nil), trackId: "audio0")
+        
         
         peerConnection?.add(videoTrack, streamIds: [streamId])
         peerConnection?.add(audioTrack, streamIds: [streamId])

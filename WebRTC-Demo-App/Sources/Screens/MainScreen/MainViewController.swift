@@ -13,10 +13,10 @@ import WebRTC
 class MainViewController: UIViewController {
     private let whipClient = WHIPClient()
     
-    private let videoCapturer = VideoCapturer()
+    private let avCapturer = AVCapturer()
     private var previewLayer: AVCaptureVideoPreviewLayer?
     
-    private let defaultEndpoint = "https://api.souv.dev/live/whip/00om5yyz8lhf40rhnsbjih797q/0qgnz7w10uyc50mmxokqssw9kl?auth=31tnz92fb1tg00puwxpa3297gx2un4fpii0sfat2po3k9tvwof2b"
+    private let defaultEndpoint = "https://api.souv.dev/live/whip/00om5yyz8lhf40rhnsbjih797q/0qgnz7w10uyc50mmxokqssw9kl?auth=002esl7k9t2md0wvf8grp9v8y90nkx59jotz8tr1h83ouktdl8xa"
     
     private let bitrates = [
         "20Mbps":20_000_000,
@@ -296,13 +296,16 @@ class MainViewController: UIViewController {
         updateCamera()
         
         // Set webrtc video source
-        self.videoCapturer.setVideoSource(
+        self.avCapturer.setVideoSource(
             source: self.whipClient.videoSource
         )
         //
         
+        self.avCapturer.setAudioDevice(device: self.whipClient.audioDevice)
+        
+        
         // Add preview layer
-        let session = self.videoCapturer.captureSession
+        let session = self.avCapturer.captureSession
         let preview = AVCaptureVideoPreviewLayer(
             session: session
         )
@@ -341,7 +344,7 @@ class MainViewController: UIViewController {
     
     private func updateCamera(){
         if let device = self.videoDevice {
-            self.videoCapturer.setupAndCapture(
+            self.avCapturer.setupAndCapture(
                 device: device,
                 height: self.quality,
                 fps: self.framerate,
@@ -352,7 +355,7 @@ class MainViewController: UIViewController {
     @IBAction func cameraTap(
         _ sender: UIButton
     ) {
-        let devices = self.videoCapturer.videoDevices()
+        let devices = self.avCapturer.videoDevices()
         
         let alert = UIAlertController(
             title: "Select Camera",
