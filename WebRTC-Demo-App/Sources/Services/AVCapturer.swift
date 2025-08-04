@@ -10,7 +10,6 @@ import AVFoundation
 import WebRTC
 
 class AVCapturer: NSObject, AVCaptureDataOutputSynchronizerDelegate {
-        
     private let videoCapturer = RTCVideoCapturer()
     
     private var synchronizer: AVCaptureDataOutputSynchronizer?
@@ -25,6 +24,9 @@ class AVCapturer: NSObject, AVCaptureDataOutputSynchronizerDelegate {
     
     let captureSession = AVCaptureSession()
     
+    private let engine = AVAudioEngine()
+    private let player = AVAudioPlayerNode()
+    
     
     override init() {
         super.init()
@@ -38,96 +40,9 @@ class AVCapturer: NSObject, AVCaptureDataOutputSynchronizerDelegate {
             self.updateVideoOrientation()
         }
         
-        NotificationCenter.default.addObserver(
-            forName: AVAudioSession.routeChangeNotification,
-            object: nil,
-            queue: .main
-        ) { notification in
-            print(
-                "🎧 Audio route changed:"
-            )
-            if let inputs = AVAudioSession.sharedInstance().availableInputs {
-                for input in inputs {
-                    print(
-                        "Updated input: \(input.portName) - \(input.portType.rawValue)"
-                    )
-                }
-            }
-        }
-    }
-    
-    
-    private func applySettings(
-        device: AVCaptureDevice,
-        height: Int32,
-        fps: Int32,
-        stabilization: AVCaptureVideoStabilizationMode
-    ) throws {
-        let sortedFormats = device.formats.sorted {
-            a,
-            b in
-            let aDims = CMVideoFormatDescriptionGetDimensions(
-                a.formatDescription
-            )
-            let bDims = CMVideoFormatDescriptionGetDimensions(
-                b.formatDescription
-            )
-            return aDims.height > bDims.height
-        }
-        
-        guard let format = sortedFormats.first(where: {
-            format in
-            let dims = CMVideoFormatDescriptionGetDimensions(
-                format.formatDescription
-            )
-            
-            let fpsSupported = format.videoSupportedFrameRateRanges.contains {
-                Int32(
-                    $0.maxFrameRate
-                ) >= fps
-            }
-            
-            var stabilizationSupport = true
-            if (
-                stabilization != .off
-            ){
-                stabilizationSupport = format.isVideoStabilizationModeSupported(
-                    stabilization
-                )
-            }
-            
-            
-            return dims.height == height && fpsSupported && stabilizationSupport
-        }) else {
-            return
-        }
-        
-        
-        let duration = CMTime(
-            value: 1,
-            timescale: fps
-        )
-        
-        try device.lockForConfiguration()
-        
-        device.activeFormat = format
-        device.activeVideoMinFrameDuration = duration
-        device.activeVideoMaxFrameDuration = duration
-        
-        device.focusMode = .continuousAutoFocus
-        device.exposureMode = .continuousAutoExposure
-        
-        print(
-            "Duration",
-            device.exposureDuration
-        )
-        print(
-            "Aperture",
-            device.lensAperture
-        )
-        
-        device.unlockForConfiguration()
-        
+        setupCaptureSession()
+        setupAudioSession()
+//        setupAudioEngine()
     }
     
     func videoDevices() -> [AVCaptureDevice] {
@@ -146,9 +61,326 @@ class AVCapturer: NSObject, AVCaptureDataOutputSynchronizerDelegate {
         ).devices
     }
     
-    func audioInputs() -> [AVAudioSessionPortDescription] {
-       return audioSession.availableInputs ?? []
-   }
+    func audioDevices() -> [AVCaptureDevice] {
+        var deviceTypes: [AVCaptureDevice.DeviceType] = []
+        if #available(
+            iOS 17.0,
+            *
+        ) {
+            deviceTypes =  [.microphone]
+        } else {
+            deviceTypes =  [.builtInMicrophone]
+        }
+        
+        
+        return AVCaptureDevice.DiscoverySession(
+            deviceTypes: deviceTypes,
+            mediaType: .audio,
+            position: .unspecified
+        ).devices
+    }
+    
+    private func setupCaptureSession(){
+        captureSession.beginConfiguration()
+        
+        captureSession.usesApplicationAudioSession = true
+        captureSession.automaticallyConfiguresApplicationAudioSession = false
+        
+        videoOutput.alwaysDiscardsLateVideoFrames = true
+        
+        // Add outputs
+        if captureSession.canAddOutput(
+            videoOutput
+        ) && captureSession.canAddOutput(
+            audioOutput
+        ) {
+            captureSession.addOutput(
+                videoOutput
+            )
+            
+            captureSession.addOutput(
+                audioOutput
+            )
+        }
+        
+        //        videoOutput.videoSettings = [
+        //            AVVideoCodecKey: AVVideoCodecType.hevc
+        //        ]
+        
+        
+        captureSession.commitConfiguration()
+        
+        
+        DispatchQueue.global(
+            qos: .userInitiated
+        ).async {
+            self.captureSession.startRunning()
+        }
+        
+    }
+    
+    private func setupAudioSession(){
+        do {
+            try audioSession.setPrefersNoInterruptionsFromSystemAlerts(true)
+            
+            try audioSession.setPreferredSampleRate(48000)
+            try audioSession.setPreferredIOBufferDuration(0.01)
+            
+            try audioSession.setCategory(
+                .playAndRecord,
+                mode: .videoRecording,
+                options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker]
+            )
+        } catch {
+            print("Audio session config error")
+        }
+        
+        do {
+            try audioSession.setActive(true)
+        } catch {
+            print(
+                "Audio session start error"
+            )
+        }
+        
+        for input in audioSession.availableInputs ?? [] {
+            print(
+                "Port: \(input.portName)"
+            )
+        }
+        
+        do {
+            try audioSession.setPreferredInputNumberOfChannels(min(audioSession.maximumInputNumberOfChannels, 2))
+            print("preferredInputNumberOfChannels \(audioSession.preferredInputNumberOfChannels)")
+            
+            // Find the built-in microphone input's data sources,
+            // and select the one that matches the specified name.
+            guard let preferredInput = audioSession.preferredInput,
+                  let dataSources = preferredInput.dataSources,
+                  let newDataSource = dataSources.first,
+                  let supportedPolarPatterns = newDataSource.supportedPolarPatterns else {
+                return
+            }
+            
+            // If the data source supports stereo, set it as the preferred polar pattern.
+            if supportedPolarPatterns.contains(
+                .stereo
+            ) {
+                // Set the preferred polar pattern to stereo.
+                try newDataSource.setPreferredPolarPattern(
+                    .stereo
+                )
+            }
+            
+            // Set the preferred data source and polar pattern.
+            try preferredInput.setPreferredDataSource(
+                newDataSource
+            )
+        } catch {
+            print(
+                "Audio session prefer stereo error"
+            )
+        }
+        
+        //            try audioSession.setAggregatedIOPreference(.aggregated)
+        //            // 4. Select desired input (Bluetooth HFP, USB, etc.)
+        //            if let preferredInput = availableInputs.first(where: { $0.portType == .bluetoothHFP }) {
+        //                try audioSession.setPreferredInput(preferredInput)
+        //                print("Bluetooth input selected: \(preferredInput.portName)")
+        //            } else if let usbInput = availableInputs.first(where: { $0.portType == .usbAudio }) {
+        //                try audioSession.setPreferredInput(usbInput)
+        //                print("USB input selected: \(usbInput.portName)")
+        //            } else if let builtInMic = availableInputs.first(where: { $0.portType == .builtInSpeaker }) {
+        //                try audioSession.setPreferredInput(builtInMic)
+        //                print("Defaulting to built-in mic")
+        //            }
+        
+    }
+    
+    private func setupAudioEngine() {
+        
+        engine.attach(player)
+        
+        let format = AVAudioFormat(commonFormat: .pcmFormatInt16,
+                                       sampleRate: 48000,
+                                       channels: 1,
+                                       interleaved: false)!        
+        engine.connect(player, to: engine.outputNode, format: format)
+        
+        do {
+            try engine.start()
+            player.play()
+        } catch {
+            print("Audio Engine failed to start: \(error)")
+        }
+    }
+    
+    func setupDevice(
+        device: AVCaptureDevice,
+        height: Int32,
+        fps: Int32,
+        stabilization: AVCaptureVideoStabilizationMode
+    ) {
+        
+        captureSession.beginConfiguration()
+        captureSession.sessionPreset = .high
+        
+        guard let audioDevice = AVCaptureDevice.default(
+            for: .audio
+        ) else {
+            return
+        }
+        
+        
+        for format in audioDevice.formats {
+            let desc = format.formatDescription
+            let streamDesc = CMAudioFormatDescriptionGetStreamBasicDescription(
+                desc
+            )?.pointee
+            if let s = streamDesc {
+                print(
+                    "Sample Rate: \(s.mSampleRate), Channels: \(s.mChannelsPerFrame)"
+                )
+            }
+        }
+        
+        applyVideoSettings(
+            device: device,
+            height: height,
+            fps: fps,
+            stabilization: stabilization
+        );
+        
+        updateVideoOrientation()
+        
+        // Remove old inputs
+        if !captureSession.inputs.isEmpty {
+            captureSession.inputs.forEach { input in
+                captureSession.removeInput(
+                    input
+                )
+            }
+        }
+        
+        guard let videoInput = try? AVCaptureDeviceInput(
+            device: device
+        ) else {
+            return
+        }
+        guard let audioInput = try? AVCaptureDeviceInput(
+            device: audioDevice
+        ) else {
+            return
+        }
+        
+        
+        captureSession.addInput(
+            videoInput
+        )
+        captureSession.addInput(
+            audioInput
+        )
+        
+        if let connection = videoOutput.connection(
+            with: .video
+        ), connection.isVideoStabilizationSupported {
+            connection.preferredVideoStabilizationMode = stabilization
+        }
+        
+        
+        captureSession.commitConfiguration()
+        
+        self.audioSource?.updateAudioParameters()
+        
+        if(
+            synchronizer == nil
+        ){
+            synchronizer = AVCaptureDataOutputSynchronizer(
+                dataOutputs: [
+                    videoOutput,
+                    audioOutput
+                ]
+            )
+            synchronizer?.setDelegate(
+                self,
+                queue: DispatchQueue(
+                    label: "synchronizer.queue"
+                )
+            )
+        }
+        
+    }
+    
+    private func applyVideoSettings(
+        device: AVCaptureDevice,
+        height: Int32,
+        fps: Int32,
+        stabilization: AVCaptureVideoStabilizationMode
+    )  {
+        do {
+            
+            let sortedFormats = device.formats.sorted {
+                a,
+                b in
+                let aDims = CMVideoFormatDescriptionGetDimensions(
+                    a.formatDescription
+                )
+                let bDims = CMVideoFormatDescriptionGetDimensions(
+                    b.formatDescription
+                )
+                return aDims.height > bDims.height
+            }
+            
+            guard let format = sortedFormats.first(where: {
+                format in
+                let dims = CMVideoFormatDescriptionGetDimensions(
+                    format.formatDescription
+                )
+                
+                let fpsSupported = format.videoSupportedFrameRateRanges.contains {
+                    Int32(
+                        $0.maxFrameRate
+                    ) >= fps
+                }
+                
+                var stabilizationSupport = true
+                if (
+                    stabilization != .off
+                ){
+                    stabilizationSupport = format.isVideoStabilizationModeSupported(
+                        stabilization
+                    )
+                }
+                
+                
+                return dims.height == height && fpsSupported && stabilizationSupport
+            }) else {
+                return
+            }
+            
+            
+            let duration = CMTime(
+                value: 1,
+                timescale: fps
+            )
+            
+            try device.lockForConfiguration()
+            
+            device.activeFormat = format
+            device.activeVideoMinFrameDuration = duration
+            device.activeVideoMaxFrameDuration = duration
+            
+            device.focusMode = .continuousAutoFocus
+            device.exposureMode = .continuousAutoExposure
+            
+            device.unlockForConfiguration()
+            
+        } catch {
+            print(
+                "Error Applying video settings"
+            )
+        }
+    }
     
     func setVideoSource(
         source: RTCVideoSource
@@ -156,7 +388,9 @@ class AVCapturer: NSObject, AVCaptureDataOutputSynchronizerDelegate {
         self.videoSource = source
     }
     
-    func setAudioDevice(device: AudioDevice) {
+    func setAudioSource(
+        device: AudioDevice
+    ) {
         self.audioSource = device
     }
     
@@ -203,191 +437,60 @@ class AVCapturer: NSObject, AVCaptureDataOutputSynchronizerDelegate {
         }
     }
     
-    func setAudioInputToBluetoothOrUSB() {
-            
-            do {
-                // 1. Set category
-                try audioSession.setCategory(
-                    .playAndRecord,
-                    mode: .videoChat,
-                    options: [.defaultToSpeaker]
-                )
-                
-                // 3. List available audio inputs
-                let availableInputs = audioInputs()
-                let availableModes = audioSession.outputDataSources ?? []
-                
-                for inpt in availableModes {
-                    print(
-                        "out \(inpt.dataSourceName)"
-                    )
-                }
-                for inpt in availableInputs {
-                    print(
-                        "Input \(inpt.portName)"
-                    )
-                }
-                
-                //            try audioSession.setAggregatedIOPreference(.aggregated)
-                //            // 4. Select desired input (Bluetooth HFP, USB, etc.)
-                //            if let preferredInput = availableInputs.first(where: { $0.portType == .bluetoothHFP }) {
-                //                try audioSession.setPreferredInput(preferredInput)
-                //                print("Bluetooth input selected: \(preferredInput.portName)")
-                //            } else if let usbInput = availableInputs.first(where: { $0.portType == .usbAudio }) {
-                //                try audioSession.setPreferredInput(usbInput)
-                //                print("USB input selected: \(usbInput.portName)")
-                //            } else if let builtInMic = availableInputs.first(where: { $0.portType == .builtInSpeaker }) {
-                //                try audioSession.setPreferredInput(builtInMic)
-                //                print("Defaulting to built-in mic")
-                //            }
-                
-                let route = audioSession.currentRoute
-                
-                for input in route.inputs {
-                    print(
-                        "🎤 Current input: \(input.portName) - \(input.portType.rawValue)"
-                    )
-                }
-                
-                for output in route.outputs {
-                    print(
-                        "🔊 Current output: \(output.portName) - \(output.portType.rawValue)"
-                    )
-                }
-                
-                try self.audioSession.setActive(
-                    true
-                )
-                
-            } catch {
-                print(
-                    "Error configuring audio session: \(error)"
-                )
-            }
-        }
-    
-    
-    func setupAndCapture(
-        device: AVCaptureDevice,
-        height: Int32,
-        fps: Int32,
-        stabilization: AVCaptureVideoStabilizationMode
+    func dataOutputSynchronizer(
+        _ synchronizer: AVCaptureDataOutputSynchronizer,
+        didOutput synchronizedDataCollection: AVCaptureSynchronizedDataCollection
     ) {
-        
-        guard let audioDevice = AVCaptureDevice.default(
-           for: .audio
-       ) else {
-           return
-       }
-        
-        
-        if(captureSession.isRunning){
-            captureSession.stopRunning()
-        }
-        
-        captureSession.beginConfiguration()
-        captureSession.sessionPreset = .high
-        
-        // Remove old inputs
-        if !captureSession.inputs.isEmpty {
-            captureSession.inputs.forEach { input in
-                captureSession.removeInput(
-                    input
-                )
-            }
-        }
-        
-        guard let videoInput = try? AVCaptureDeviceInput(
-            device: device
-        ) else {
-            return
-        }
-        guard let audioInput = try? AVCaptureDeviceInput(
-            device: audioDevice
-        ) else {
-            return
-        }
-        
-        captureSession.usesApplicationAudioSession = true
-        captureSession.automaticallyConfiguresApplicationAudioSession = true
-        
-        captureSession.addInput(
-            videoInput
-        )
-        captureSession.addInput(
-            audioInput
-        )
-        
-        videoOutput.alwaysDiscardsLateVideoFrames = true
-        
-        // Add outputs
-        if captureSession.canAddOutput(videoOutput) && captureSession.canAddOutput(audioOutput) {
-            captureSession.addOutput(
-                videoOutput
+        // Get synchronized video
+        if let syncedVideo = synchronizedDataCollection.synchronizedData(
+            for: videoOutput
+        ) as? AVCaptureSynchronizedSampleBufferData,
+           !syncedVideo.sampleBufferWasDropped {
+            
+            let videoSampleBuffer = syncedVideo.sampleBuffer
+            //              let videoPTS = CMSampleBufferGetPresentationTimeStamp(videoSampleBuffer)
+            //              print("Synced Video PTS: \(videoPTS.seconds)")
+            
+            captureOutputVideo(
+                sampleBuffer: videoSampleBuffer
             )
-            captureSession.addOutput(
-                audioOutput
+        }
+        
+        // Get synchronized audio
+        if let syncedAudio = synchronizedDataCollection.synchronizedData(
+            for: audioOutput
+        ) as? AVCaptureSynchronizedSampleBufferData,
+           !syncedAudio.sampleBufferWasDropped {
+            
+            let audioSampleBuffer = syncedAudio.sampleBuffer
+            
+            //              let audioPTS = CMSampleBufferGetPresentationTimeStamp(audioSampleBuffer)
+            //              print("Synced Audio PTS: \(audioPTS.seconds)")
+            
+            audioSource?.deliverRecordedData(
+                sampleBuffer: audioSampleBuffer
             )
             
-            synchronizer = AVCaptureDataOutputSynchronizer(dataOutputs: [videoOutput, audioOutput])
-            synchronizer?.setDelegate(self, queue: DispatchQueue(label: "synchronizer.queue"))
+            if player.isPlaying {
+                playAudio(audioSampleBuffer)
+            }
         }
-        
-        //        videoOutput.videoSettings = [
-        //            AVVideoCodecKey: AVVideoCodecType.hevc
-        //        ]
-        
-        
-        try? applySettings(
-            device: device,
-            height: height,
-            fps: fps,
-            stabilization: stabilization
-        );
-        
-        if let connection = videoOutput.connection(
-            with: .video
-        ), connection.isVideoStabilizationSupported {
-            connection.preferredVideoStabilizationMode = stabilization
-        }
-        
-        self.updateVideoOrientation()
-        
-        
-        self.setAudioInputToBluetoothOrUSB()
-        
-        captureSession.commitConfiguration()
-        
-        DispatchQueue.global(
-            qos: .userInitiated
-        ).async {
-            self.captureSession.startRunning()
-        }
-        
     }
     
-    func dataOutputSynchronizer(_ synchronizer: AVCaptureDataOutputSynchronizer, didOutput synchronizedDataCollection: AVCaptureSynchronizedDataCollection) {
-        // Get synchronized video
-          if let syncedVideo = synchronizedDataCollection.synchronizedData(for: videoOutput) as? AVCaptureSynchronizedSampleBufferData,
-             !syncedVideo.sampleBufferWasDropped {
-              
-              let videoSampleBuffer = syncedVideo.sampleBuffer
-//              let videoPTS = CMSampleBufferGetPresentationTimeStamp(videoSampleBuffer)
-//              print("Synced Video PTS: \(videoPTS.seconds)")
-              
-              captureOutputVideo(sampleBuffer: videoSampleBuffer)
-          }
-
-          // Get synchronized audio
-          if let syncedAudio = synchronizedDataCollection.synchronizedData(for: audioOutput) as? AVCaptureSynchronizedSampleBufferData,
-             !syncedAudio.sampleBufferWasDropped {
-              
-              let audioSampleBuffer = syncedAudio.sampleBuffer
-//              let audioPTS = CMSampleBufferGetPresentationTimeStamp(audioSampleBuffer)
-//              print("Synced Audio PTS: \(audioPTS.seconds)")
-
-              audioSource?.deliverRecordedData(sampleBuffer: audioSampleBuffer)
-          }
+    func captureOutput(
+        _ output: AVCaptureOutput,
+        didOutput sampleBuffer: CMSampleBuffer,
+        from connection: AVCaptureConnection
+    ) {
+        if output == videoOutput {
+            captureOutputVideo(
+                sampleBuffer: sampleBuffer
+            )
+        } else if output == audioOutput {
+            audioSource?.deliverRecordedData(
+                sampleBuffer: sampleBuffer
+            )
+        }
     }
     
     private func captureOutputVideo(
@@ -420,6 +523,41 @@ class AVCapturer: NSObject, AVCaptureDataOutputSynchronizerDelegate {
                 videoCapturer,
                 didCapture: videoFrame
             )
+        }
+    }
+    
+    func playAudio(
+        _ sampleBuffer: CMSampleBuffer
+    ) {
+        guard let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer),
+                  let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
+
+        guard let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc) else { return }
+        
+        let inputFormat = AVAudioFormat(streamDescription: asbd)!
+        let numSamples = CMSampleBufferGetNumSamples(sampleBuffer)
+
+        guard let pcmBuffer = AVAudioPCMBuffer(pcmFormat: inputFormat,
+                                               frameCapacity: AVAudioFrameCount(numSamples)) else {
+            return
+        }
+
+        var lengthAtOffset = 0
+        var totalLength = 0
+        var dataPointer: UnsafeMutablePointer<Int8>?
+        
+        CMBlockBufferGetDataPointer(blockBuffer, atOffset: 0,
+                                    lengthAtOffsetOut: &lengthAtOffset,
+                                    totalLengthOut: &totalLength,
+                                    dataPointerOut: &dataPointer)
+
+        if let data = dataPointer {
+            memcpy(pcmBuffer.int16ChannelData![0], data, totalLength)
+            pcmBuffer.frameLength = AVAudioFrameCount(numSamples)
+                
+            
+            // 🔊 Now play it back
+            player.scheduleBuffer(pcmBuffer, completionHandler: nil)
         }
     }
 }

@@ -114,7 +114,6 @@ class WHIPClient: NSObject {
             encoderFactory: encoder,
             decoderFactory: decoder, 
             audioDevice: audioDevice
-            
         )
         
         videoSource = factory.videoSource()
@@ -158,22 +157,28 @@ class WHIPClient: NSObject {
             
         )
         
-        let session = AVAudioSession.sharedInstance()
-        print("Input before WebRTC track: \(session.currentRoute.inputs.first?.portName ?? "None")")
-                
+        let audioConstraints = RTCMediaConstraints(
+            mandatoryConstraints: [
+                "googEchoCancellation": "false",
+                "googAutoGainControl": "false",
+                "googNoiseSuppression": "false",
+                "googHighpassFilter": "false",
+                "googTypingNoiseDetection": "false",
+                "googAudioMirroring": "false"
+            ],
+            optionalConstraints: nil
+        )
+    
         let streamId = "stream"
         
         let videoTrack = factory.videoTrack(with: videoSource, trackId: "video0")
-        let audioTrack = factory.audioTrack(with: factory.audioSource(with: nil), trackId: "audio0")
+        let audioTrack = factory.audioTrack(with: factory.audioSource(with: audioConstraints), trackId: "audio0")
         
         
         peerConnection?.add(videoTrack, streamIds: [streamId])
         peerConnection?.add(audioTrack, streamIds: [streamId])
         
         self.applyBitrate()
-        
-        try? session.setPreferredInput(nil)
-        print("Input after WebRTC track: \(session.currentRoute.inputs.first?.portName ?? "None")")
     }
     
     

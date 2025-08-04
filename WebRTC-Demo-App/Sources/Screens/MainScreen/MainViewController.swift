@@ -290,7 +290,7 @@ class MainViewController: UIViewController {
         self.stabilization = .cinematicExtended
         
         self.videoDevice = AVCaptureDevice.default(
-            for: .video
+            .builtInTrueDepthCamera, for: .video, position: .front
         )
         
         updateCamera()
@@ -301,7 +301,7 @@ class MainViewController: UIViewController {
         )
         //
         
-        self.avCapturer.setAudioDevice(device: self.whipClient.audioDevice)
+        self.avCapturer.setAudioSource(device: self.whipClient.audioDevice)
         
         
         // Add preview layer
@@ -344,7 +344,7 @@ class MainViewController: UIViewController {
     
     private func updateCamera(){
         if let device = self.videoDevice {
-            self.avCapturer.setupAndCapture(
+            self.avCapturer.setupDevice(
                 device: device,
                 height: self.quality,
                 fps: self.framerate,
